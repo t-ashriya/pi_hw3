@@ -3,7 +3,6 @@ export type ConversionMode = "vlm" | "standard" | "dual";
 export type Verdict =
 	| "valid"
 	| "likely-valid"
-	| "mismatch"
 	| "unverified"
 	| "likely-hallucinated"
 	| "needs-manual-review";
@@ -111,11 +110,20 @@ export interface ConversionComparison {
 	summary: string[];
 }
 
+export interface SearchResult {
+	stage: "primary" | "citation-recheck";
+	query: string;
+	resultText: string;
+	exitCode: number;
+}
+
 export interface SearchEvidence {
 	query: string;
 	purpose: string;
 	rawTextPath?: string;
 	resultText: string;
+	results?: SearchResult[];
+	selectedResult?: SearchResult["stage"];
 	exitCode?: number;
 	error?: string;
 }
@@ -128,6 +136,7 @@ export interface ReferenceCheck {
 	verdict: Verdict;
 	confidence: number;
 	reason: string;
+	discrepancy: string;
 	evidenceUrls: string[];
 }
 

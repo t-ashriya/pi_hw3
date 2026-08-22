@@ -97,13 +97,15 @@ function buildSearchQuery(
 	raw: string,
 	parts: Pick<NormalizedReference, "title" | "authors" | "year" | "doi" | "arxivId">,
 ): string {
-	if (parts.doi) return parts.doi;
-	if (parts.arxivId) return `arXiv ${parts.arxivId}`;
+	if (parts.doi) return `Official publication record for DOI ${parts.doi}. Claimed citation: ${firstLine(raw, 320)}`;
+	if (parts.arxivId) return `Official publication record for arXiv ${parts.arxivId}. Claimed citation: ${firstLine(raw, 320)}`;
 	const chunks: string[] = [];
 	if (parts.title) chunks.push(`"${parts.title}"`);
 	if (parts.authors) chunks.push(firstAuthorLastName(parts.authors));
 	if (parts.year) chunks.push(parts.year.replace(/[a-z]$/i, ""));
-	if (chunks.length >= 2) return chunks.filter(Boolean).join(" ");
+	if (chunks.length >= 2) {
+		return `Official publication record for ${chunks.filter(Boolean).join(" ")}. Claimed citation: ${firstLine(raw, 320)}`;
+	}
 	return firstLine(raw, 280);
 }
 

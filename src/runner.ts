@@ -224,6 +224,7 @@ async function processOneInput(
 					verdict: verdict.verdict,
 					confidence: verdict.confidence,
 					reason: verdict.reason,
+					discrepancy: verdict.discrepancy,
 					evidenceUrls: verdict.evidenceUrls,
 				};
 			});
@@ -268,7 +269,7 @@ async function confirmSearchIfNeeded(count: number, inputPath: string, options: 
 	if (options.yes || !bridge.hasUI || count <= 12) return;
 	const ok = await bridge.ui?.confirm?.(
 		"Run GPT Web Search checks?",
-		`/citecheck found ${count} references in ${inputPath}. This will run one native-web-search request per reference. Continue?`,
+		`/citecheck found ${count} references in ${inputPath}. This will run one native-web-search request per reference, plus a second request when a claimed citation mismatch needs auditing. Continue?`,
 		{ signal: bridge.signal },
 	);
 	throwIfAborted(bridge.signal);
@@ -323,7 +324,6 @@ function emptyVerdictCounts(): Record<Verdict | "total", number> {
 		total: 0,
 		valid: 0,
 		"likely-valid": 0,
-		mismatch: 0,
 		unverified: 0,
 		"likely-hallucinated": 0,
 		"needs-manual-review": 0,
@@ -355,11 +355,10 @@ function formatCounts(counts: Record<Verdict | "total", number>): string {
 		`${counts.total} checked`,
 		`valid ${counts.valid}`,
 		`likely-valid ${counts["likely-valid"]}`,
-		`mismatch ${counts.mismatch}`,
+		`likely-hallucinated ${counts["likely-hallucinated"]}`,
+		`unverified ${counts.unverified}`,
 		`needs-review ${counts["needs-manual-review"]}`,
 	];
-	if (counts["likely-hallucinated"] > 0) parts.push(`likely-hallucinated ${counts["likely-hallucinated"]}`);
-	if (counts.unverified > 0) parts.push(`unverified ${counts.unverified}`);
 	return parts.join(", ");
 }
 

@@ -46,25 +46,25 @@ function renderSummaryReport(summary: SummaryReport): string {
 	const attentionRows: string[] = [];
 	for (const paper of summary.papers) {
 		const counts = countPaperVerdicts(paper);
-		if (counts.mismatch === 0 && counts["likely-hallucinated"] === 0 && counts["needs-manual-review"] === 0) continue;
+		if (counts["likely-hallucinated"] === 0 && counts.unverified === 0 && counts["needs-manual-review"] === 0) continue;
 		attentionRows.push(
-			`| ${escapeTable(basename(paper.inputPath))} | ${counts.mismatch} | ${counts["likely-hallucinated"]} | ${counts["needs-manual-review"]} |`,
+			`| ${escapeTable(basename(paper.inputPath))} | ${counts["likely-hallucinated"]} | ${counts.unverified} | ${counts["needs-manual-review"]} |`,
 		);
 	}
 	if (attentionRows.length > 0) {
-		lines.push("| Paper | mismatch | likely-hallucinated | needs-manual-review |", "|---|---:|---:|---:|", ...attentionRows);
+		lines.push("| Paper | likely-hallucinated | unverified | needs-manual-review |", "|---|---:|---:|---:|", ...attentionRows);
 	} else {
 		lines.push("_No papers need attention._");
 	}
 	lines.push("", "## Citation checks on all papers", "");
 	lines.push(
-		"| Paper | Total references | valid | likely-valid | mismatch | likely-hallucinated | needs-manual-review |",
+		"| Paper | Total references | valid | likely-valid | likely-hallucinated | unverified | needs-manual-review |",
 		"|---|---:|---:|---:|---:|---:|---:|",
 	);
 	for (const paper of summary.papers) {
 		const counts = countPaperVerdicts(paper);
 		lines.push(
-			`| ${escapeTable(basename(paper.inputPath))} | ${counts.total} | ${counts.valid} | ${counts["likely-valid"]} | ${counts.mismatch} | ${counts["likely-hallucinated"]} | ${counts["needs-manual-review"]} |`,
+			`| ${escapeTable(basename(paper.inputPath))} | ${counts.total} | ${counts.valid} | ${counts["likely-valid"]} | ${counts["likely-hallucinated"]} | ${counts.unverified} | ${counts["needs-manual-review"]} |`,
 		);
 	}
 	if (summary.skipped.length > 0) {
@@ -95,7 +95,6 @@ function emptyVerdictCounts(): Record<Verdict | "total", number> {
 		total: 0,
 		valid: 0,
 		"likely-valid": 0,
-		mismatch: 0,
 		unverified: 0,
 		"likely-hallucinated": 0,
 		"needs-manual-review": 0,
@@ -168,6 +167,7 @@ function appendCheckDetails(lines: string[], check: ReferenceCheck, outDir: stri
 	lines.push(`### Reference ${check.entry.index}: ${check.verdict}`, "");
 	lines.push(`Confidence: ${check.confidence.toFixed(2)}`);
 	lines.push(`Reason: ${check.reason}`);
+	lines.push(`Discrepancy: ${check.discrepancy}`);
 	if (check.conversionNotes.length > 0) {
 		lines.push("", "Conversion notes:");
 		for (const note of check.conversionNotes) lines.push(`- ${note}`);
@@ -182,12 +182,29 @@ function appendCheckDetails(lines: string[], check: ReferenceCheck, outDir: stri
 	if (check.evidence) {
 		lines.push("", "Search evidence:");
 		if (check.evidence.rawTextPath) lines.push(`- raw text: \`${rel(check.evidence.rawTextPath)}\``);
+		const results = check.evidence.results ?? [{
+			stage: "primary" as const,
+			query: check.evidence.query,
+			resultText: check.evidence.resultText,
+			exitCode: check.evidence.exitCode ?? 0,
+		}];
+		for (const result of results) {
+			const selected = result.stage === (check.evidence.selectedResult ?? "primary");
+			const label = result.stage === "primary" ? "Primary web search result" : "Citation recheck result";
+			lines.push("", `#### ${label}${selected ? " (used for classification)" : ""}`, "");
+			lines.push(`Query: ${result.query}`, `Exit code: ${result.exitCode}`, "");
+			appendBlockquote(lines, result.resultText || "_(empty result)_");
+		}
 		if (check.evidenceUrls.length > 0) {
-			lines.push("- URLs:");
-			for (const url of check.evidenceUrls) lines.push(`  - ${url}`);
+			lines.push("", "Evidence URLs:");
+			for (const url of check.evidenceUrls) lines.push(`- ${url}`);
 		}
 	}
 	lines.push("");
+}
+
+function appendBlockquote(lines: string[], text: string): void {
+	for (const line of text.split("\n")) lines.push(`> ${line}`);
 }
 
 function formatRefsOnlyPdfRange(refsOnlyPdf: NonNullable<PaperReport["refsOnlyPdf"]>): string {

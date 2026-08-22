@@ -22,7 +22,7 @@ describe("runner", () => {
 				return {
 					stdout: JSON.stringify({
 						result:
-							"Verdict: likely-valid\nConfidence: 0.81\nReason: title and year match a real paper.\nEvidence URLs: https://example.com/paper",
+							"Verdict: likely-valid\nConfidence: 0.81\nReason: title and year match a real paper.\nDiscrepancy: title formatting: cited capitalization -> publisher capitalization\nEvidence URLs: https://example.com/paper",
 					}),
 					stderr: "",
 					code: 0,
@@ -53,7 +53,7 @@ describe("runner", () => {
 		assert.doesNotMatch(summaryMarkdown, /## Per-paper verdict counts/);
 		assert.match(summaryMarkdown, /## Papers that need attention\n\n_No papers need attention\._/);
 		assert.match(summaryMarkdown, /## Citation checks on all papers/);
-		assert.match(summaryMarkdown, /\| Paper \| Total references \| valid \| likely-valid \| mismatch \| likely-hallucinated \| needs-manual-review \|/);
+		assert.match(summaryMarkdown, /\| Paper \| Total references \| valid \| likely-valid \| likely-hallucinated \| unverified \| needs-manual-review \|/);
 		assert.match(summaryMarkdown, /\| sample\.md \| 1 \| 0 \| 1 \| 0 \| 0 \| 0 \|/);
 		assert.ok(progressMessages.some((message) => message.includes("/citecheck processing 1 Markdown file")));
 		assert.ok(progressMessages.some((message) => message.includes("/citecheck web-search started: sample")));
@@ -65,10 +65,130 @@ describe("runner", () => {
 		const paperMarkdown = await readFile(join(temp, "out", "reports", "sample.report.md"), "utf8");
 		assert.match(paperMarkdown, /### Reference 1: likely-valid/);
 		assert.match(paperMarkdown, /ImageNet Classification/);
+		assert.match(paperMarkdown, /Discrepancy: title formatting: cited capitalization -> publisher capitalization/);
+		assert.match(paperMarkdown, /#### Primary web search result \(used for classification\)/);
+		assert.match(paperMarkdown, /> Verdict: likely-valid/);
 		assert.doesNotMatch(paperMarkdown, /raw JSON:/);
 	});
 
-	it("summary attention section lists only papers with mismatch, hallucinated, or manual-review counts", async () => {
+	it("rechecks a claimed citation mismatch against the exact citation", async () => {
+		const temp = await mkdtemp(join(tmpdir(), "citecheck-test-"));
+		const skillDir = join(temp, "native-web-search");
+		await mkdir(skillDir, { recursive: true });
+		await writeFile(join(skillDir, "SKILL.md"), "---\nname: native-web-search\ndescription: test\n---\n", "utf8");
+		await writeFile(join(skillDir, "search.mjs"), "// fake\n", "utf8");
+		const input = join(temp, "autogen.md");
+		await writeFile(
+			input,
+			"# Paper\n\n## References\n\n[1] Q. Wu, G. Bansal, J. Zhang et al., 'AutoGen: Enabling next-gen LLM applications via multi-agent conversations,' in Conference on Language Modeling (COLM), 2024.\n",
+			"utf8",
+		);
+
+		let searchCalls = 0;
+		const queries: string[] = [];
+		const purposes: string[] = [];
+		const exec: ExecFn = async (command, args) => {
+			if (command === "sh") return { stdout: "", stderr: "", code: 0 };
+			if (command === "node") {
+				searchCalls++;
+				queries.push(args[1] ?? "");
+				const purposeIndex = args.indexOf("--purpose");
+				purposes.push(purposeIndex >= 0 ? args[purposeIndex + 1] ?? "" : "");
+				const result = searchCalls === 1
+					? "Verdict: likely-valid\nConfidence: 0.95\nReason: The work is real, but the original citation's venue is wrong because it was a workshop paper.\nDiscrepancy: venue: COLM -> workshop\nEvidence URLs: https://example.com/workshop"
+					: "Verdict: valid\nConfidence: 0.99\nReason: The official COLM 2024 accepted-papers page confirms this publication and author list.\nDiscrepancy: none\nEvidence URLs: https://colmweb.org/2024/AcceptedPapers.html";
+				return { stdout: JSON.stringify({ result }), stderr: "", code: 0 };
+			}
+			return { stdout: "", stderr: `unexpected command ${command}`, code: 1 };
+		};
+
+		const outDir = join(temp, "out");
+		await runCitecheck(`${input} --from-md --out ${outDir} --yes`, {
+			cwd: temp,
+			exec,
+			hasUI: false,
+			getCommands: () => [{
+				name: "native-web-search",
+				source: "skill",
+				sourceInfo: { path: join(skillDir, "SKILL.md") },
+			}],
+		});
+
+		assert.equal(searchCalls, 2);
+		assert.match(queries[0]!, /COLM/);
+		assert.match(queries[1]!, /COLM/);
+		assert.match(purposes[1]!, /official venue website/);
+		assert.match(purposes[0]!, /title OR authors OR venue/);
+		assert.match(purposes[1]!, /title OR authors OR venue/);
+		assert.match(purposes[0]!, /Online-resource rule/);
+		assert.match(purposes[0]!, /arXiv-version rule/);
+		assert.match(purposes[1]!, /Online-resource rule/);
+		assert.match(purposes[1]!, /arXiv-version rule/);
+		const report = await readFile(join(outDir, "reports", "autogen.report.md"), "utf8");
+		assert.match(report, /### Reference 1: valid/);
+		assert.match(report, /official COLM 2024 accepted-papers page confirms/);
+		assert.match(report, /#### Primary web search result/);
+		assert.match(report, /#### Citation recheck result \(used for classification\)/);
+		assert.match(report, /> Discrepancy: venue: COLM -> workshop/);
+		assert.match(report, /> Discrepancy: none/);
+		const raw = await readFile(join(outDir, "raw-search", "autogen", "ref-001.stdout.txt"), "utf8");
+		assert.match(raw, /\[primary search\]/);
+		assert.match(raw, /\[citation recheck\]/);
+	});
+
+	it("rechecks a likely-hallucinated result using a DOI discovered by the first search", async () => {
+		const temp = await mkdtemp(join(tmpdir(), "citecheck-test-"));
+		const skillDir = join(temp, "native-web-search");
+		await mkdir(skillDir, { recursive: true });
+		await writeFile(join(skillDir, "SKILL.md"), "---\nname: native-web-search\ndescription: test\n---\n", "utf8");
+		await writeFile(join(skillDir, "search.mjs"), "// fake\n", "utf8");
+		const input = join(temp, "instruction-tuning.md");
+		await writeFile(
+			input,
+			"# Paper\n\n## References\n\n[15] S. Zhang, L. Dong, X. Li et al., 'Instruction tuning for large language models: A survey,' ACM Comput. Surv., vol. 58, no. 7, pp. 1-36, 2026.\n",
+			"utf8",
+		);
+
+		let searchCalls = 0;
+		const queries: string[] = [];
+		const purposes: string[] = [];
+		const exec: ExecFn = async (command, args) => {
+			if (command === "sh") return { stdout: "", stderr: "", code: 0 };
+			if (command === "node") {
+				searchCalls++;
+				queries.push(args[1] ?? "");
+				const purposeIndex = args.indexOf("--purpose");
+				purposes.push(purposeIndex >= 0 ? args[purposeIndex + 1] ?? "" : "");
+				const result = searchCalls === 1
+					? "Verdict: likely-hallucinated\nConfidence: 0.96\nReason: The work exists, but the claimed ACM publication does not match the older arXiv record.\nEvidence URLs: https://arxiv.org/abs/2308.10792 https://doi.org/10.1145/3777411"
+					: "Verdict: valid\nConfidence: 0.99\nReason: The ACM and Crossref records confirm the title, authors, ACM Computing Surveys volume 58 issue 7, pages 1-36, and 2026 publication year.\nEvidence URLs: https://dl.acm.org/doi/10.1145/3777411 https://doi.org/10.1145/3777411";
+				return { stdout: JSON.stringify({ result }), stderr: "", code: 0 };
+			}
+			return { stdout: "", stderr: `unexpected command ${command}`, code: 1 };
+		};
+
+		const outDir = join(temp, "out");
+		await runCitecheck(`${input} --from-md --out ${outDir} --yes`, {
+			cwd: temp,
+			exec,
+			hasUI: false,
+			getCommands: () => [{
+				name: "native-web-search",
+				source: "skill",
+				sourceInfo: { path: join(skillDir, "SKILL.md") },
+			}],
+		});
+
+		assert.equal(searchCalls, 2);
+		assert.match(queries[1]!, /https:\/\/doi\.org\/10\.1145\/3777411/);
+		assert.match(purposes[1]!, /Resolve every DOI and inspect its publisher or Crossref metadata/);
+		assert.match(purposes[1]!, /10\.1145\/3777411/);
+		const report = await readFile(join(outDir, "reports", "instruction-tuning.report.md"), "utf8");
+		assert.match(report, /### Reference 1: valid/);
+		assert.match(report, /ACM and Crossref records confirm/);
+	});
+
+	it("summary attention section lists only papers with hallucinated, unverified, or manual-review counts", async () => {
 		const temp = await mkdtemp(join(tmpdir(), "citecheck-test-"));
 		const skillDir = join(temp, "native-web-search");
 		await mkdir(skillDir, { recursive: true });
@@ -86,7 +206,7 @@ describe("runner", () => {
 			if (command === "node") {
 				const query = args[1] ?? "";
 				const verdict = query.includes("Needs Attention")
-					? "mismatch"
+					? "needs-manual-review"
 					: query.includes("Invented Paper")
 						? "likely-hallucinated"
 						: "valid";
@@ -116,11 +236,11 @@ describe("runner", () => {
 
 		const summaryMarkdown = await readFile(join(temp, "out", "summary.md"), "utf8");
 		const attentionSection = /## Papers that need attention\n\n([\s\S]*?)\n\n## Citation checks on all papers/.exec(summaryMarkdown)?.[1] ?? "";
-		assert.match(attentionSection, /\| Paper \| mismatch \| likely-hallucinated \| needs-manual-review \|/);
-		assert.match(attentionSection, /\| hallucinated\.md \| 0 \| 1 \| 0 \|/);
-		assert.match(attentionSection, /\| needs\.md \| 1 \| 0 \| 0 \|/);
+		assert.match(attentionSection, /\| Paper \| likely-hallucinated \| unverified \| needs-manual-review \|/);
+		assert.match(attentionSection, /\| hallucinated\.md \| 1 \| 0 \| 0 \|/);
+		assert.match(attentionSection, /\| needs\.md \| 0 \| 0 \| 1 \|/);
 		assert.doesNotMatch(attentionSection, /ok\.md/);
-		assert.match(summaryMarkdown, /\| hallucinated\.md \| 1 \| 0 \| 0 \| 0 \| 1 \| 0 \|/);
+		assert.match(summaryMarkdown, /\| hallucinated\.md \| 1 \| 0 \| 0 \| 1 \| 0 \| 0 \|/);
 		assert.match(summaryMarkdown, /\| ok\.md \| 1 \| 1 \| 0 \| 0 \| 0 \| 0 \|/);
 	});
 

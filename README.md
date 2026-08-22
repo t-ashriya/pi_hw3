@@ -1,8 +1,8 @@
 # pi-citecheck
 
-`pi-citecheck` is a standalone Pi extension that adds a `/citecheck` slash command for checking academic PDFs for likely AI-hallucinated references. It converts PDFs to Markdown with Docling, extracts only the references section, and verifies each bibliography entry using the installed `native-web-search` skill, which runs GPT Web Search.
+`pi-citecheck` is a standalone Pi extension that adds a `/citecheck` slash command for checking academic PDFs for likely AI-hallucinated references. It converts PDFs to Markdown with Docling, extracts only the references section, and verifies each bibliography entry or cited online resource using the installed `native-web-search` skill, which runs GPT Web Search.
 
-The goal is to quickly identify references that deserve manual review: nonexistent titles, DOI mismatches, wrong venues, wrong years, or suspicious references that only appear in the paper being checked.
+The goal is to identify references that do not correspond to the work or resource they claim. Gross identity conflicts may be reported as `likely-hallucinated`; minor URL differences, online pages without formal publication metadata, arXiv-versus-conference versions, and secondary metadata errors are handled leniently.
 
 ## Installing the Extension
 
@@ -27,8 +27,8 @@ After installing, start Pi and use `/citecheck` from the Pi prompt.
 - Always extracts only the references/bibliography section before checking citations.
 - Splits references into individual entries with numbered and author-year heuristics.
 - Normalizes useful citation fields such as title, authors, year, DOI, URL, and arXiv ID.
-- Runs one GPT Web Search check per reference through the existing `native-web-search` skill.
-- Produces Markdown and JSON reports, including raw search outputs for auditability.
+- Runs GPT Web Search through the existing `native-web-search` skill and audits negative or claimed-mismatch results, carrying discovered DOI evidence into the audit.
+- Produces Markdown reports and retains raw search outputs for auditability.
 - Flags disagreement between VLM and standard Docling conversions.
 - Emits visible Pi progress messages at phase changes, after reference-search milestones, after each paper, and periodically during long Docling/search steps.
 - Supports `/citecheck stop` to cancel the active run and terminate launched Docling/search/helper process trees, including descendants left behind by wrappers.
@@ -163,8 +163,9 @@ For each PDF:
 8. Prefer the standard conversion as the primary bibliography text when it produced entries.
 9. Compare primary references against the other conversion and record conversion-disagreement notes.
 10. Normalize each primary reference.
-11. Run GPT Web Search through `native-web-search` for each reference.
-12. Classify each reference and write reports.
+11. Run GPT Web Search through `native-web-search` for each reference, using the full claimed citation in the query.
+12. Audit negative or claimed-mismatch results with a second search, explicitly resolving DOI evidence discovered by the first search.
+13. Classify each reference and write reports.
 
 During long-running steps, `/citecheck` also posts concise progress messages in Pi. It reports phase changes immediately and emits a heartbeat about every 30 seconds while Docling or web-search work is still running. Search progress is also reported after the first checked reference, every five references, and at completion.
 
@@ -242,12 +243,15 @@ node <native-web-search>/search.mjs "<query>" \
   --json
 ```
 
-For each reference, the search purpose asks GPT Web Search to verify title, authors, year, venue, DOI, URL, and arXiv ID when available. It also asks for a compact structured result:
+For each reference, the query includes the full claimed citation, including its authors, venue, year, URL, and arXiv identifier when present. The search instructions require primary sources such as the cited site, arXiv record, official proceedings page, publisher record, DOI page, or venue OpenReview group. Finding a workshop copy or preprint does not disprove a conference publication. If the first response is negative or claims that a citation field is wrong, the extension runs a second source-focused search before recording the result. DOI identifiers discovered by the first search are included in that audit with instructions to inspect their publisher or Crossref metadata.
+
+The search also returns a compact structured result:
 
 ```text
-Verdict: one of valid | likely-valid | mismatch | unverified | likely-hallucinated | needs-manual-review
+Verdict: one of valid | likely-valid | unverified | likely-hallucinated | needs-manual-review
 Confidence: number from 0 to 1
 Reason: one concise sentence
+Discrepancy: none, or a concise list in "field: cited value -> verified value" form
 Evidence URLs: full URLs separated by spaces
 ```
 
@@ -259,14 +263,13 @@ Each reference receives one verdict:
 
 | Verdict | Meaning |
 |---|---|
-| `valid` | Strong evidence that the reference exists and core fields match. |
-| `likely-valid` | Evidence suggests the reference is real, but not all fields were confirmed. |
-| `mismatch` | A found source disagrees with important fields such as title, authors, DOI, year, or venue. |
+| `valid` | Strong evidence confirms the cited work or online resource. A correct arXiv identifier remains valid when the same work also has a conference or journal version. |
+| `likely-valid` | The work or resource exists, but its URL, page label, arXiv identifier, version, or secondary metadata has a non-gross discrepancy. |
 | `unverified` | Search did not find enough reliable evidence either way. |
-| `likely-hallucinated` | Strong negative evidence suggests the reference is fabricated or points to a different work. |
+| `likely-hallucinated` | Reliable evidence shows a gross identity conflict or indicates that the cited work or resource was fabricated. |
 | `needs-manual-review` | The search failed, returned unclear evidence, or the result should be inspected by a human. |
 
-The extension is intentionally conservative. A missing search result is not automatically treated as hallucination. Stronger negative labels are reserved for mismatches or evidence that a cited work likely does not exist.
+For ordinary publication citations, a demonstrated material mismatch in an asserted title **OR** authors **OR** venue can result in `likely-hallucinated`, and the reason names the failed field. An omitted venue is incomplete metadata, not a venue mismatch. There are two explicit version/resource exceptions. First, an online citation is `valid` or `likely-valid` when its quoted, repaired, redirected, or nearby official URL points to a resource whose subject broadly matches; it is not rejected merely because the target is a product, documentation, support, marketing, or catalog page. Second, an arXiv citation is `valid` when its identifier resolves to the same work, regardless of a later conference or journal version, and is `likely-valid` when only the arXiv-versus-formal-version metadata remains questionable. Initials versus full names, `et al.`, venue abbreviations, punctuation, and hyphenation are benign. When title, authors, and any asserted venue identify the same work, errors limited to year, DOI, issue, volume, or pages—including a year off by one or prepublication pagination—are minor and produce `likely-valid`. A missing search result without a demonstrated mismatch produces `unverified` or `needs-manual-review`.
 
 ## Output layout
 
@@ -305,8 +308,8 @@ The summary report includes:
 
 - Start and finish timestamps.
 - Output directory.
-- A "Papers that need attention" table listing only papers with `mismatch`, `likely-hallucinated`, or `needs-manual-review` counts above zero.
-- A "Citation checks on all papers" verdict-count table with total references, `valid`, `likely-valid`, `mismatch`, `likely-hallucinated`, and `needs-manual-review` counts.
+- A "Papers that need attention" table listing papers with `likely-hallucinated`, `unverified`, or `needs-manual-review` results.
+- A "Citation checks on all papers" table with counts for every verdict.
 
 ### Per-paper reports
 
@@ -325,6 +328,8 @@ Each per-paper report includes:
   - verdict,
   - confidence,
   - reason,
+  - the specific discrepancy between the citation and verified record,
+  - primary and citation-recheck web-search results, with the result used for classification marked,
   - evidence URLs,
   - raw search output paths.
 
@@ -451,7 +456,7 @@ Use `--max-concurrency 1` to make searches sequential:
 - PDF conversion can introduce errors, especially for scanned, multi-column, or heavily formatted PDFs.
 - GPT Web Search can miss obscure, newly published, paywalled, non-English, or incorrectly indexed works.
 - A verdict is evidence for review, not a proof.
-- The extension currently performs one web-search request per reference, which can be slow or rate-limited for large bibliographies.
+- The extension performs one web-search request per reference and may perform a second request to audit a negative result or claimed citation mismatch. Large bibliographies can be slow or rate-limited.
 
 ## Git hygiene
 

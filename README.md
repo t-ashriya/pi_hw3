@@ -160,7 +160,7 @@ For each PDF:
 5. Convert the PDF with Docling standard mode.
 6. Extract only the references section from each Markdown output.
 7. Split references into entries.
-8. Prefer the standard conversion as the primary bibliography text when it produced entries.
+8. Select the more complete bibliography as primary: prefer an extraction with an explicit references heading, then a materially larger entry set; prefer standard when completeness is comparable because its text is usually less distorted.
 9. Compare primary references against the other conversion and record conversion-disagreement notes.
 10. Normalize each primary reference.
 11. Run GPT Web Search through `native-web-search` for each reference, using the full claimed citation in the query.
@@ -201,7 +201,7 @@ docling \
 
 Reference checking depends on faithful bibliography text. VLM conversion can recover difficult layouts, but it may also rewrite or distort text. Standard conversion can be more literal for searchable text PDFs, but may struggle with scanned or unusual layouts.
 
-Dual mode gives the checker two independent views of the references section. The report records cases where a reference from the primary conversion has no close match in the other conversion, or only a partial match. These notes are useful because a suspicious citation may actually be a conversion artifact.
+Dual mode gives the checker two independent views of the references section. It uses heading detection and materially different entry counts to avoid choosing a truncated bibliography, while retaining standard as the tie-breaker when both conversions appear similarly complete. The report records cases where a reference from the primary conversion has no close match in the other conversion, or only a partial match. These notes are useful because a suspicious citation may actually be a conversion artifact.
 
 ## References-only behavior
 

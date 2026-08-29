@@ -40,17 +40,61 @@ export function compareConversions(artifacts: ConversionArtifact[]): ConversionC
 
 	return {
 		primaryMode: primary.mode,
-		primaryReason: primary.mode === "standard"
-			? "Using standard Docling output as primary because bibliography text is usually less distorted than VLM output."
-			: "Using VLM Docling output as primary because standard output had no references or was not requested.",
+		primaryReason: primaryReason(primary, standard, vlm),
 		notesByPrimaryIndex,
 		summary,
 	};
 }
 
+function primaryReason(
+	primary: ConversionArtifact,
+	standard: ConversionArtifact | undefined,
+	vlm: ConversionArtifact | undefined,
+): string {
+	if (primary.mode === "standard") {
+		return "Using standard Docling output as primary because its bibliography is at least as complete and is usually less distorted than VLM output.";
+	}
+	if (!standard || standard.references.length === 0) {
+		return "Using VLM Docling output as primary because standard output had no references or was not requested.";
+	}
+	if (primary.section.found && !standard.section.found) {
+		return "Using VLM Docling output as primary because it found an explicit references heading while standard used an incomplete best-effort tail section.";
+	}
+	if (vlm && hasMateriallyMoreReferences(vlm, standard)) {
+		return `Using VLM Docling output as primary because it extracted materially more references than standard (${vlm.references.length} vs ${standard.references.length}).`;
+	}
+	return "Using VLM Docling output as primary because it provided the strongest available bibliography extraction.";
+}
+
 export function choosePrimary(artifacts: ConversionArtifact[]): ConversionArtifact {
 	const standard = artifacts.find((artifact) => artifact.mode === "standard");
-	if (standard && standard.references.length > 0) return standard;
-	const withRefs = artifacts.find((artifact) => artifact.references.length > 0);
-	return withRefs ?? artifacts[0]!;
+	const vlm = artifacts.find((artifact) => artifact.mode === "vlm");
+
+	if (!standard || standard.references.length === 0) {
+		return vlm?.references.length ? vlm : (standard ?? artifacts[0]!);
+	}
+	if (!vlm || vlm.references.length === 0) return standard;
+
+	// A detected heading is stronger evidence that extraction started at the
+	// beginning of the bibliography. The tail fallback can start halfway through
+	// a numbered list, which previously made any non-empty standard result win
+	// even when VLM had recovered the complete section.
+	if (
+		vlm.section.found &&
+		!standard.section.found &&
+		vlm.references.length >= standard.references.length
+	) return vlm;
+	if (standard.section.found && !vlm.section.found) return standard;
+
+	// When heading evidence is equal, only let VLM's count override the usual
+	// standard preference if the gain is large enough not to be a one-entry
+	// splitting difference.
+	if (hasMateriallyMoreReferences(vlm, standard)) return vlm;
+	return standard;
+}
+
+function hasMateriallyMoreReferences(candidate: ConversionArtifact, baseline: ConversionArtifact): boolean {
+	const candidateCount = candidate.references.length;
+	const baselineCount = baseline.references.length;
+	return candidateCount - baselineCount >= 3 && candidateCount >= baselineCount * 1.25;
 }

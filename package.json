@@ -12,7 +12,8 @@
   ],
   "pi": {
     "extensions": [
-      "./extensions/citecheck/index.ts"
+      "./extensions/citecheck/index.ts",
+      "./extensions/reminder/index.ts"
     ]
   },
   "scripts": {
